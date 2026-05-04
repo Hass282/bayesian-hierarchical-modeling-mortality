@@ -127,3 +127,9 @@ Libraries used:
 - sf  
 - coda  
 - R2jags  
+
+
+## Notes
+
+This project was completed as part of postgraduate coursework to further explore bayesian modelling.
+
