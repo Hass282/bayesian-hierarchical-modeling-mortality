@@ -24,9 +24,11 @@ A recurring issue in real datasets is that estimates can become unstable, especi
 
 The Standard Mortality Ratio is defined as:
 
-Oi​∼Poisson(Ei​⋅θi​)
 
-$O_i \sim \text{Poisson}(E_i \cdot \theta_i)$
+$$
+O_i \sim \text{Poisson}(E_i \cdot \theta_i)
+$$
+
 
 SMR = Observed / Expected
 
@@ -38,11 +40,17 @@ This is a simple and straightforward estimate of relative risk. However, it does
 
 In the next step I use a hierarchical Bayesian model:
 
-Oi​∼Poisson(Ei​⋅θi​)
+$$
+O_i \sim \text{Poisson}(E_i \cdot \theta_i)
+$$
 
-log(θi​) = α + bi​
+$$
+\log(\theta_i) = \alpha + b_i
+$$
 
-bi​∼Normal(0,σ2)
+$$
+b_i \sim \mathcal{N}(0, \sigma^2)
+$$
 
 The model was fitted using MCMC sampling in JAGS. This allows estimates of the full posterior distribution of the relative risk rather than relying on a single point estimate.
 
