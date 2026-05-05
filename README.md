@@ -131,7 +131,7 @@ Libraries used:
 
 ## Code
 
-The full analysis workflow, including model specification and MCMC implementation, is available here:
+The full analysis workflow in (R), including model specification and MCMC implementation, is available here:
 
 [Bayesian Disease Mapping (R Markdown)](./Bayesian-project.Rmd)
 
