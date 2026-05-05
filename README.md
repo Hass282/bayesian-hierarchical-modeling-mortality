@@ -126,7 +126,14 @@ Libraries used:
 - dplyr  
 - sf  
 - coda  
-- R2jags  
+- R2jags
+
+
+## Code
+
+The full analysis workflow, including model specification and MCMC implementation, is available here:
+
+[Bayesian Disease Mapping (R Markdown)](./Bayesian-project.Rmd)
 
 
 ## Notes
