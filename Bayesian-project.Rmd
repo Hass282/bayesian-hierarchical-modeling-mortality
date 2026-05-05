@@ -1,0 +1,613 @@
+---
+title: "Bayesian Hierarchical Modelling for Mortality Mapping"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    toc: yes
+    toc_depth: 2
+---
+
+## Introduction
+
+This project is aimed to explore the use of hierarchical Bayesian models for mortality mapping. 
+
+The goal is to estimate relative risk across geographical regions while accounting for variability and uncertainty in observed mortality counts.
+
+I modeled observed counts using a Poisson likelihood with random effect for each area and performed inference using MCMC methods implemented in JAGS.
+
+This approach allows for more stable estimates compared to classical methods such as Standard Mortality Ratios (SMR), particularly in regions with small sample sizes.
+
+
+
+```{r,warning=FALSE,message=FALSE}
+library(tidyverse)
+library(RColorBrewer)
+library(coda)
+library(sf)
+library(rjags)
+library(lattice)
+library(MCMCvis)
+library(R2jags)
+
+
+
+setwd("/Users/hassanainqazzaz/Downloads")
+
+# Load the data
+
+scot = read.csv("Scotland.csv")
+
+surg= read.csv("surgical.csv")
+
+
+
+
+
+```
+
+```{r,warning=FALSE,message=FALSE}
+
+ScotlandMap <- function(data, figtitle="",lower=NULL,upper=NULL){
+  # local authority administrative areas
+  names <- c("Skye-Lochalsh", "Banff-Buchan",  "Caithness",     "Berwickshire",  "Ross-Cromarty", "Orkney",        "Moray" ,       
+  "Shetland",      "Lochaber",      "Gorden",        "Western Isles", "Sutherland",    "Nairn",         "Wigtown",      
+  "NE Fife",       "Kincardine",    "Bedenoch",      "Ettrick",       "Inverness",     "Roxburgh",      "Angus",        
+  "Aberdeen",      "Argyll-Bute",   "Clydesdale",    "Kirkcaldy" ,    "Dunfermline",   "Nithsdale",     "East Lothian", 
+  "Perth-Kinross", "West Lothian",  "Cumnock-Doon",  "Stewartry",     "Midlothian",    "Stirling",      "Kyle-Carrick", 
+  "Inverclyde",    "Cunninghame",   "Monklands",     "Dumbarton",     "Clydebank",     "Renfrew",       "Falkirk" ,     
+  "Clackmannan",   "Motherwell",    "Edinburgh",     "Kilmarnock",    "East Kilbride" ,"Hamilton",      "Glasgow",      
+  "Dundee" ,       "Cumbernauld",   "Bearsden" ,     "Eastwood" ,    "Strathkelvin",  "Tweeddale" ,    "Annandale") 
+  
+  # merging provided data with area names
+  df <- data.frame(Name=names,Value = data)
+  
+  # Reading in Scotland shapefiles
+  library(sf)
+  Scotland <- st_read("/Users/hassanainqazzaz/Downloads/Scotland_data/Scotland.shp", quiet = TRUE)
+  
+  # Combining data and the shapefile
+  Scotland_data <- merge(Scotland, df,
+               by = 'Name')
+  Scotland_data <- st_as_sf(Scotland_data)
+  
+  # Setting the colour limits
+  if(is.null(lower)) lower=floor(min(data))
+  if(is.null(upper)) upper=ceiling(max(data))
+  
+  # Creating the map
+  ggplot(Scotland_data,
+         aes(fill = Value)) +
+    geom_sf(colour = NA) + theme_bw() +
+    labs(x = 'Longitude',
+         y = 'Latitude',
+         fill = 'Value') +
+    scale_fill_gradientn(colours = brewer.pal(9, 'RdPu'),
+                         breaks = seq(lower,upper,length.out=5)) +
+    ggtitle(label=figtitle)
+}
+
+
+
+
+
+```
+
+
+## Exploratory Analysis: Standard Mortality Ratios (SMR)
+
+As a baseline, I computed the Standard Mortality Ratio (SMR):
+
+SMR = Observed / Expected
+
+This provides a naive estimate of relative risk, but does not account for 
+statistical uncertainty or variability across regions.
+
+```{r}
+
+# Calculate the Standard Mortality Ratios 
+# (SMR=observed/expected) for each administrative area
+
+scot$smr = scot$Observed/scot$Expected
+
+# Plot the distribution
+
+# Plot the distribution of the SMRs
+ggplot(scot, aes(x = smr)) +
+  geom_histogram(binwidth = 0.5,  fill = "red") +
+  xlab("Standard Mortality Ratio") +
+  ylab("Count") +
+  ggtitle("Distribution of SMRs for lip cancer in Scotland")
+
+
+
+ScotlandMap(scot$smr,
+            figtitle="Scotland Standard mortality rate by area")
+
+
+
+
+```
+
+
+
+## Bayesian Hierarchical Model
+
+To account for variability across regions, a hierarchical Bayesian model is implemented:
+
+- Observed counts are assumed to follow a Poisson distribution
+- The log-risk is modeled as a combination of a global intercept and area-specific random effects
+
+This allows to produce more stable estimates.
+
+Where:
+
+- β₀ represents the overall log-relative risk
+- θᵢ represents area-specific deviations (random effects)
+- θᵢ ~ Normal(0, τ)
+
+This hierarchical structure captures unobserved heterogeneity across regions.
+
+```{r,warning=FALSE,message=FALSE}
+
+
+# Specify model in JAGS
+jags.mod <- function(){
+  # Likelihood
+  for (i in 1:n) {
+    Obs[i] ~ dpois(mu[i])
+    log(mu[i]) <- log(Exp[i]) + beta0 + theta[i]
+    theta[i] ~ dnorm(0, tau)
+    RR[i] <- exp(beta0) * exp(theta[i])
+  }
+  
+  # Prior for beta0
+  beta0 ~ dnorm(0, 1/1000)
+  
+  
+ 
+  tau ~ dgamma(1, 0.05)
+}
+
+
+
+# Extract the data to be added to a list
+n = nrow(scot)
+Name = scot[,1]
+Obs = scot[,2]
+Exp = scot[,3]
+smr = scot[,4]
+
+
+# Convert data to list
+jags.data = list("n" = n,  "Obs" = Obs, 
+                 "Exp" = Exp)
+
+
+# Parameters we want to monitor
+jags.param <- c('theta' ,"beta0","tau","RR","mu")
+
+# Specify initial values
+inits1 <-  list('tau' = 20, 'beta0'= 0,theta=rep(0,n))
+inits2 <- list('tau'=22,'beta0' = 0.5 ,theta=rep(0.5,n))
+jags.inits <- list(inits1, inits2)
+
+
+# Fit the JAGS model
+jags.mod.fit = jags(data = jags.data , inits = jags.inits,
+                     parameters.to.save = jags.param, 
+                    n.chains =2,
+                     n.iter = 10000,
+                     n.burnin = 2500,n.thin=1, 
+                    model.file = jags.mod, 
+                    DIC=TRUE)
+
+
+print(jags.mod.fit)
+
+# Convert to mcmc
+jags.mcmc = as.mcmc(jags.mod.fit)
+
+
+## Gelman plot indicates that 1000-2500 should be burnin
+gelman.plot(jags.mcmc)
+
+# Gelman diagnostics indicate that convergence has been reached
+
+
+# Summaries and traceplots
+MCMCtrace(jags.mcmc,type = 'trace',ind = TRUE,pdf=F)
+summary(jags.mcmc)
+
+```
+
+Using the gelman.plot function as visual aid the n.burnin was set at 2500 where the chains seemed to settle and n.iter at 10k. The chains of all paramters seem to have converged looking at the traceplots which show good mixing, also the gelam rubin diagnostic all are close to 1 which further confirms convergence.
+
+
+```{r,warning=FALSE,message=FALSE}
+# Extract RR 
+RR=jags.mod.fit$BUGSoutput$mean$RR
+
+# Extra bit
+scot$RR=RR
+scot$diff = smr - RR
+
+# Compare mean of RR to SMR
+mean(RR)
+mean(smr)
+
+# Create a data frame to plot the difference between RR and smr
+df= data_frame(smr=smr,RR=RR)
+ggplot(df,) + geom_density(aes(x=smr,color="blue")) +
+  geom_density(aes(x=RR,color="red"))
+
+
+# Map RR and smr
+ScotlandMap(RR,figtitle="Scotland RR")
+ScotlandMap(smr,figtitle="Scotland smr")
+
+
+
+ggplot(scot,) + geom_density(aes(x=diff,color="red"))
+
+
+```
+
+The posterior means for the RR and the smr are very similar with the RR values generally lower indicating that the SMR overestimates the actual RR.
+
+```{r,warning=FALSE,message=FALSE}
+
+# Specify model in JAGS
+jags.mod2 <- function(){
+  # Likelihood
+  for (i in 1:n) {
+    Obs[i] ~ dpois(mu[i])
+    log(mu[i]) <- log(Exp[i]) + beta0 + theta[i]
+    theta[i] ~ dnorm(0, tau)
+    RR[i] <- exp(beta0 + theta[i])
+  }
+  
+  # Prior for beta0
+  beta0 ~ dnorm(0, 1/1000)
+  
+  
+  
+  tau ~ dgamma(1, 0.05)
+  
+  
+  # Add node of probability that RR > 1
+  RRpred = ifelse(RR > 1, 1 , 0)
+  
+  
+}
+
+
+# Parameters we want to monitor
+jags.param2 <- c('RR',"RRpred")
+
+
+
+# Fit the JAGS model
+jags.mod.fit2 = jags(data = jags.data , inits = jags.inits,
+                    parameters.to.save = jags.param2, 
+                    n.chains = 2,
+                    n.iter = 10000,
+                    n.burnin = 2500,n.thin=1, 
+                    model.file = jags.mod2,
+                    DIC=TRUE)
+
+
+# Extract th probabilities
+RRpred = jags.mod.fit2$BUGSoutput$mean$RRpred
+
+# Map the probs
+ScotlandMap(RRpred,figtitle="RRpred")
+
+# Extract probs where 95% certainty
+
+a95 =  ifelse(RRpred > 0.95,1,0)
+ScotlandMap(a95,figtitle="Areas>95% certain contains excess cancer")
+
+
+# Find areas with RR_prob >= 0.95
+scot$RRpred= RRpred
+excess_risk_areas <- scot$Name[scot$RRpred >= 0.95]
+
+# Print the names of these areas
+print(excess_risk_areas)
+
+
+```
+
+
+
+```{r,warning=FALSE,message=FALSE}
+
+
+# Specify model in JAGS
+jags.mod3 <- function(){
+  # Likelihood
+  for (i in 1:n) {
+    Obs[i] ~ dpois(mu[i])
+    log(mu[i]) <- log(Exp[i]) + beta0 + theta[i]
+    theta[i] ~ dnorm(0, tau)
+    RR[i] <- exp(beta0 + theta[i])
+  }
+  
+
+  
+  # Prior for intercept
+  beta0 ~ dnorm(0, 0.1)
+  
+  # Prior for precision parameter
+  tau ~ dgamma(2, 0.01)
+}
+
+
+
+# Fit the JAGS model
+jags.mod.fit3 = jags(data = jags.data , inits = jags.inits,
+                    parameters.to.save = jags.param, 
+                    n.chains = 2,
+                    n.iter = 10000,
+                    n.burnin = 2500,n.thin=1, 
+                    model.file = jags.mod3, 
+                    DIC=TRUE)
+
+
+RR3 = jags.mod.fit3$BUGSoutput$mean$RR
+
+# Map both RRs and observe differences 
+
+ScotlandMap(RR3,figtitle="Scotland RR3")
+ScotlandMap(RR,figtitle="Scotland RR")
+
+summary(jags.mcmc3)
+
+
+```
+
+
+The priors chosen for this model are vague priors. With Beta0 having normal prior with (0,10) and tau having a gamma prior (2,0.01). For Beta0 a 0 mean shows no prior preference for the intercept value, the variance of 10 still makes it a vague prior but more informative than the prior with variance 1000. This will make the values more concentrated towards the mean but still allow for estimates to be made.
+
+For the tau the gamma(2,0.01) has a mean of 200 which is much higher than the previous prior but still vague. The shape parameter is set as 2 instead of 1 to give more weight to lower vlaues of the distribution and allow for uncertainity.
+
+
+
+```{r,warning=FALSE,message=FALSE}
+
+# Jags model
+
+jags.mod4 <- function(){ for(i in 1:12){
+  r[i] ~ dbin(theta[i],n[i])
+  logit(theta[i]) <- logit.theta[i]
+  logit.theta[i] ~ dnorm(mu, tau)
+}
+  mu ~ dnorm(0,1.0E-3)
+  tau <- 1/sigma^2
+  sigma ~ dunif(0,100)
+}
+
+
+# Specify initial values
+inits4 <-  list('mu'= 0,"sigma"=0,"logit.theta"=rep(0,12))
+inits4 <- list('mu'= 1,"sigma"=1,"logit.theta"=rep(1,12))
+jags.inits4 <- list(inits4, inits4)
+
+
+# Parameters we want to monitor
+jags.param4 <- c('theta' ,'mu',"sigma")
+
+
+# Fit the JAGS model
+jags.mod.fit4 = jags(data=as.list(surg) , inits = jags.inits4,
+                    parameters.to.save = jags.param4, 
+                    n.chains = 2,
+                    n.iter = 10000,
+                    n.burnin = 5000,n.thin=1, 
+                    model.file = jags.mod4,
+                    DIC=TRUE)
+
+
+
+print(jags.mod.fit4)
+jags.mcmc4=as.mcmc(jags.mod.fit4)
+gelman.diag(jags.mcmc4,multivariate=F)
+gelman.plot(jags.mcmc4)
+MCMCtrace(jags.mcmc4)
+summary(jags.mcmc4)
+
+```
+
+Looking at the traceplots all paramters have converged since plots show good mixing, this is futher confirmed by the gelman rubin diagnostic which shows all values very close to 1.
+
+
+
+```{r,warning=FALSE,message=FALSE}
+
+
+# Jags model
+
+jags.mod5 <- function(){ for(i in 1:12){
+  r[i] ~ dbin(theta[i],n[i])
+  logit(theta[i]) <- logit.theta[i]
+  logit.theta[i] ~ dnorm(mu, tau)
+  rpred[i] ~ dbin(theta[i],n[i])
+}
+  mu ~ dnorm(0,1.0E-3)
+  tau <- 1/sigma^2
+  sigma ~ dunif(0,100)
+  midp = ifelse(rpred > r,1,0) + 0.5 * ifelse(rpred==r,1,0)
+}
+
+
+
+# Parameters we want to monitor
+jags.param5 <- c("rpred","midp","theta")
+
+# Specify initial values
+inits5 <-  list('mu'= 0,"sigma"=0,"logit.theta"=rep(0,12),"r.pred"=rep(30,12))
+inits5 <- list('mu'= 1,"sigma"=1,"logit.theta"=rep(1,12),"r.pred"=rep(32,12))
+jags.inits5 <- list(inits5, inits5)
+
+
+# Fit the JAGS model
+jags.mod.fit5 = jags(data=as.list(surg) , inits = jags.inits5,
+                    parameters.to.save = jags.param5, n.chains = 2,
+                    n.iter = 10000,
+                    n.burnin = 5000,n.thin=1, model.file = jags.mod5,
+                    DIC=TRUE)
+
+print(jags.mod.fit5)
+
+# Convert to mcmc and get summaries
+jags.mcmc5 = as.mcmc(jags.mod.fit5)
+summary(jags.mcmc5)
+
+
+# Observe traceplots
+MCMCtrace(jags.mcmc5,type="density",ind = T)
+
+
+# Extract R and rpred 
+rpred = jags.mod.fit5$BUGSoutput$mean$rpred
+r=surg$r
+
+# Create a data frame to plot the difference between r and rpred
+df=data_frame(r=r,rpred=rpred)
+ggplot(df,)+geom_density(aes(x=r,color="blue"))+
+  geom_density(aes(x=rpred,color="red"))
+
+
+# Observe and revise midp values
+jags.mod.fit5$BUGSoutput$mean$midp
+
+
+
+
+```
+
+
+
+
+```{r,warning=FALSE,message=FALSE}
+# Jags model
+
+jags.mod6 <- function(){ for(i in 1:12){
+  r[i] ~ dbin(theta[i],n[i])
+  theta[i] ~ dunif(0, 1)
+}
+  mu ~ dnorm(0,1.0E-3)
+  tau <- 1/sigma^2
+  sigma ~ dunif(0,100)
+}
+
+# Specify initial values
+inits6 <-  list('mu'= 0,"sigma"=0)
+inits6 <- list('mu'= 1,"sigma"=1)
+jags.inits6 <- list(inits6, inits6)
+
+# Parameters we want to monitor
+jags.param6 <- c("theta")
+
+
+# Fit the JAGS model
+jags.mod.fit6 = jags(data=as.list(surg) , inits = jags.inits6,
+                    parameters.to.save = jags.param6, n.chains = 2,
+                    n.iter = 10000,
+                    n.burnin = 5000,n.thin=1, model.file = jags.mod6, 
+                    DIC=TRUE)
+
+
+
+print(jags.mod.fit6)
+jags.mcmc6=as.mcmc(jags.mod.fit6)
+summary(jags.mcmc6)
+
+
+# Extract theta from fixed and random effects models
+
+rndm=jags.mod.fit4$BUGSoutput$mean$theta
+fixed=jags.mod.fit6$BUGSoutput$mean$theta
+fixed
+rndm
+
+df= data_frame(rndm=rndm,fixed=fixed)
+
+
+# combine posterior samples into one data frame
+theta_all <- rbind(
+  data.frame(theta = rndm, model = "random effects"),
+  data.frame(theta = fixed, model = "fixed effects")
+)
+
+# plot boxplots of mortality rates for each hospital under each model
+ggplot(theta_all, aes(x = factor(model), y = theta, 
+                      fill = factor(model))) +
+  geom_boxplot() +
+  xlab("Model") +
+  ylab("Mortality rate") +
+  ggtitle("Comparison of posterior distributions for hospital mortality rates") +
+  theme_bw()
+
+boxplot(rndm)
+
+
+## The 11th hospital looks like an outlier in both models
+
+```
+
+
+
+```{r,warning=FALSE,message=FALSE}
+
+# Jags model
+
+jags.mod7 <- function(){ for(i in 1:12){
+  r[i] ~ dbin(theta[i],n[i])
+  theta[i] ~ dunif(0, 1)
+  rpred[i] ~ dbin(theta[i],n[i])
+}
+  mu ~ dnorm(0,1.0E-3)
+  tau <- 1/sigma^2
+  sigma ~ dunif(0,100)
+  midp = ifelse(rpred > r,1,0) + 0.5 * ifelse(rpred==r,1,0)
+}
+
+
+
+# Fit the JAGS model
+jags.mod.fit7 = jags(data=as.list(surg) , inits = jags.inits4,
+                    parameters.to.save = jags.param5, 
+                    n.chains = 2,
+                    n.iter = 10000,
+                    n.burnin = 5000,n.thin=1, 
+                    model.file = jags.mod7, 
+                    DIC=TRUE)
+
+
+
+print(jags.mod.fit7)
+jags.mcmc7=as.mcmc(jags.mod.fit7)
+gelman.diag(jags.mcmc7,multivariate=F)
+summary(jags.mcmc7)
+
+
+midprndm=jags.mod.fit5$BUGSoutput$mean$midp
+midpfxd=jags.mod.fit7$BUGSoutput$mean$midp
+
+midpfxd  
+midprndm 
+
+par(mfrow = c(1, 2))
+boxplot(midprndm  , main = "Random Effects", ylab = "Mid P-value")
+boxplot(midpfxd , main = "Fixed Effects", ylab = "Mid P-value")
+
+
+
+```
+
+
+
+
